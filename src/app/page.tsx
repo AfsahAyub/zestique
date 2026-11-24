@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 
 type MenuItem = {
   id: number;
@@ -78,14 +78,15 @@ export default function Home() {
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
     async function loadMenu() {
       try {
-        const response = await fetch("/api/menu", { cache: "no-store" });
+        const response = await fetch("/api/menu");
         if (!response.ok) throw new Error("Could not load menu");
-        const data: MenuItem[] = await response.json();
+        const data = (await response.json()) as MenuItem[];
         if (active) setItems(data);
       } catch {
         if (active) setError("Menu load nahi ho saka. Database connection check karein.");
@@ -97,36 +98,78 @@ export default function Home() {
     return () => { active = false; };
   }, []);
 
-  async function addItem(e: FormEvent<HTMLFormElement>) {
+  function startEdit(dish: MenuItem) {
+    setEditingId(dish.id);
+    setName(dish.name);
+    setPrice(String(dish.price));
+    setDescription(dish.description ?? "");
+    setError("");
+    setMessage("");
+  }
+
+  function resetForm() {
+    setEditingId(null);
+    setName("");
+    setPrice("");
+    setDescription("");
+  }
+
+  async function saveItem(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!name.trim() || !Number.isFinite(Number(price)) || Number(price) <= 0) {
+    if (
+      !name.trim() ||
+      name.trim().length > 255 ||
+      !Number.isFinite(Number(price)) ||
+      Number(price) <= 0 ||
+      Number(price) > 99999999.99
+    ) {
       setError("Valid dish name aur price enter karein.");
       return;
     }
+
     setSaving(true);
     setError("");
     setMessage("");
+    const isEditing = editingId !== null;
+
     try {
       const response = await fetch("/api/menu", {
-        method: "POST",
+        method: isEditing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), price: Number(price), description: description.trim() }),
+        body: JSON.stringify({
+          ...(isEditing ? { id: editingId } : {}),
+          name: name.trim(),
+          price: Number(price),
+          description: description.trim(),
+        }),
       });
-      if (!response.ok) throw new Error("Add failed");
-      const newItem: MenuItem = await response.json();
-      setItems((previous) => [newItem, ...previous]);
-      setName("");
-      setPrice("");
-      setDescription("");
-      setMessage("Dish successfully added! Refresh ke baad bhi menu mein rahegi.");
-    } catch {
-      setError("Dish add nahi ho saki. API aur database check karein.");
+
+      if (!response.ok) {
+        const problem = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(problem.error || (isEditing ? "Update failed" : "Add failed"));
+      }
+
+      const savedDish = (await response.json()) as MenuItem;
+      if (isEditing) {
+        setItems((previous) =>
+          previous.map((dish) => (dish.id === savedDish.id ? savedDish : dish))
+        );
+      } else {
+        setItems((previous) => [savedDish, ...previous]);
+      }
+
+      resetForm();
+      setMessage(isEditing ? "Dish successfully updated!" : "Dish successfully added!");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Dish save nahi ho saki.");
     } finally {
       setSaving(false);
     }
   }
 
   async function deleteItem(id: number) {
+    const browser = globalThis as unknown as { confirm: (message: string) => boolean };
+    if (!browser.confirm("Kya aap ye dish permanently delete karna chahti hain?")) return;
     setDeletingId(id);
     setError("");
     setMessage("");
@@ -134,6 +177,7 @@ export default function Home() {
       const response = await fetch(`/api/menu?id=${id}`, { method: "DELETE" });
       if (!response.ok) throw new Error("Delete failed");
       setItems((previous) => previous.filter((dish) => dish.id !== id));
+      if (editingId === id) resetForm();
       setMessage("Dish successfully deleted!");
     } catch {
       setError("Dish delete nahi ho saki.");
@@ -165,7 +209,13 @@ export default function Home() {
             <a href="#about" className="transition hover:text-[#D8B77D]">ABOUT</a>
             <a href="#menu" className="transition hover:text-[#D8B77D]">MENU</a>
             <a href="#contact" className="transition hover:text-[#D8B77D]">CONTACT</a>
-          </nav>
+          <a
+  href="/logout"
+  className="rounded-full border border-[#D8B77D] px-5 py-2 text-[#D8B77D] transition hover:bg-[#D8B77D] hover:text-black"
+>
+  LOGOUT
+</a>
+</nav>
           <button type="button" onClick={() => setMenuOpen(!menuOpen)} className="rounded border border-white/50 px-4 py-2 text-sm text-white md:hidden" aria-label="Toggle navigation">MENU</button>
         </div>
         {menuOpen && (
@@ -173,6 +223,7 @@ export default function Home() {
             {([ ["HOME", "#home"], ["ABOUT", "#about"], ["MENU", "#menu"], ["CONTACT", "#contact"] ] as const).map(([label, href]) => (
               <a key={href} href={href} onClick={() => setMenuOpen(false)}>{label}</a>
             ))}
+            <a href="/logout" onClick={() => setMenuOpen(false)} className="text-[#D8B77D]">LOGOUT</a>
           </nav>
         )}
       </header>
@@ -236,20 +287,50 @@ export default function Home() {
                   <p className="zestique-sans mt-4 min-h-16 text-sm leading-7 text-[#756D62]">{dish.description || "Freshly prepared with care at Zestique."}</p>
                   <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[#E9E0D4] pt-5">
                     <span className="zestique-serif text-2xl font-bold text-[#18382F]">Rs. {Number(dish.price).toLocaleString("en-PK")}</span>
-                    <button type="button" onClick={() => void deleteItem(dish.id)} disabled={deletingId === dish.id} className="rounded bg-[#49362C] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#18382F] disabled:opacity-50">{deletingId === dish.id ? "Deleting..." : "Delete Dish"}</button>
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href="#dish-editor"
+                        onClick={() => startEdit(dish)}
+                        className="rounded border border-[#18382F] px-4 py-2 text-sm font-semibold text-[#18382F] transition hover:bg-[#E7E0D4]"
+                      >
+                        Edit Dish
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => void deleteItem(dish.id)}
+                        disabled={deletingId === dish.id || saving}
+                        className="rounded bg-[#49362C] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#18382F] disabled:opacity-50"
+                      >
+                        {deletingId === dish.id ? "Deleting..." : "Delete Dish"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </article>
             ))}
           </div>
 
-          <div className="mx-auto mt-14 max-w-2xl bg-[#FFFCF7] p-7 shadow-lg md:p-10">
-            <h3 className="zestique-serif mb-6 text-center text-3xl font-semibold text-[#49362C]">Add a New Dish</h3>
-            <form onSubmit={addItem} className="space-y-5">
-              <input type="text" placeholder="Dish name" aria-label="Dish name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={255} className="w-full border border-[#D8CBB9] bg-white p-4 text-[#18382F]" />
-              <input type="number" placeholder="Price in Rs." aria-label="Price in rupees" value={price} onChange={(e) => setPrice(e.target.value)} min="0.01" step="0.01" required className="w-full border border-[#D8CBB9] bg-white p-4 text-[#18382F]" />
-              <textarea placeholder="Dish description" aria-label="Dish description" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="w-full border border-[#D8CBB9] bg-white p-4 text-[#18382F]" />
-              <button type="submit" disabled={saving} className="w-full bg-[#18382F] px-6 py-4 font-semibold text-white transition hover:bg-[#285043] disabled:opacity-50">{saving ? "Adding Dish..." : "ADD DISH"}</button>
+          <div id="dish-editor" className="mx-auto mt-14 max-w-2xl scroll-mt-8 bg-[#FFFCF7] p-7 shadow-lg md:p-10">
+            <h3 className="zestique-serif mb-6 text-center text-3xl font-semibold text-[#49362C]">
+              {editingId !== null ? "Edit Dish" : "Add a New Dish"}
+            </h3>
+            <form onSubmit={saveItem} className="space-y-5">
+              <input type="text" placeholder="Dish name" aria-label="Dish name" value={name} onChange={(e: ChangeEvent<HTMLInputElement>) => setName((e.target as unknown as { value: string }).value)} required maxLength={255} className="w-full border border-[#D8CBB9] bg-white p-4 text-[#18382F]" />
+              <input type="number" placeholder="Price in Rs." aria-label="Price in rupees" value={price} onChange={(e: ChangeEvent<HTMLInputElement>) => setPrice((e.target as unknown as { value: string }).value)} min="0.01" step="0.01" required className="w-full border border-[#D8CBB9] bg-white p-4 text-[#18382F]" />
+              <textarea placeholder="Dish description" aria-label="Dish description" value={description} onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDescription((e.target as unknown as { value: string }).value)} rows={3} className="w-full border border-[#D8CBB9] bg-white p-4 text-[#18382F]" />
+              <button type="submit" disabled={saving} className="w-full bg-[#18382F] px-6 py-4 font-semibold text-white transition hover:bg-[#285043] disabled:opacity-50">
+                {saving ? "Saving..." : editingId !== null ? "SAVE CHANGES" : "ADD DISH"}
+              </button>
+              {editingId !== null && (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={resetForm}
+                  className="w-full border border-[#49362C] px-6 py-3 font-semibold text-[#49362C] transition hover:bg-[#F1EAE0] disabled:opacity-50"
+                >
+                  CANCEL EDIT
+                </button>
+              )}
             </form>
             {message ? <p role="status" className="mt-4 text-center text-green-700">{message}</p> : null}
             {error ? <p role="alert" className="mt-4 text-center text-red-600">{error}</p> : null}
@@ -282,3 +363,5 @@ export default function Home() {
     </main>
   );
 }
+
+
